@@ -103,7 +103,7 @@ fn pull_from_url(vendor: &str, name: &str, url: &str) {
 		return;
 	    }
 	    let (parsed_vendor, parsed_name) =
-		parse_repo_name(latest_providers["name"].as_str().unwrap());
+		parse_repo_name(x["name"].as_str().unwrap());
 	    
 	    if parsed_vendor != vendor || parsed_name != name {
 		println!("{} is inconsistent with {}/{}",

@@ -9,7 +9,7 @@ name = "vmman"
 path = "src/main.rs"
 
 [[bin]]
-name = "vm-list"
+name = "vm-init"
 path = "src/init.rs"
 
 [[bin]]

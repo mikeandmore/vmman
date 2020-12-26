@@ -1,0 +1,29 @@
+[package]
+name = "vmman"
+version = "0.1.0"
+authors = ["Mike Qin <mikeandmore@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "vmman"
+path = "src/main.rs"
+
+[[bin]]
+name = "vm-list"
+path = "src/init.rs"
+
+[[bin]]
+name = "vm-pull"
+path = "src/pull.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+toml = "0.4.2"
+json = "0.12.4"
+curl = "0.4.34"
+libc = "0.2.66"
+
+[profile.release]
+lto = true
+panic = "abort"

@@ -56,7 +56,7 @@ fn download_and_convert_image(vendor: &str, name: &str, url: &str) -> Result<(),
 	    if has_error.load(Ordering::Acquire) {
 		Err("Download error".to_string())
 	    } else {
-		let cmd = format!("qemu-img convert -f virtualbox -O raw {}.vdi {}.img", prefix_name, prefix_name);
+		let cmd = format!("qemu-img convert -f vdi -O raw {}.vdi {}.img", prefix_name, prefix_name);
 		unsafe { libc::system(CString::new(cmd).unwrap().as_ptr()); }
 		// println!("{}", cmd);
 		Ok(())

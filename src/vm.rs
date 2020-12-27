@@ -84,10 +84,18 @@ impl VmManager {
 		|e| {
 		    match e {
 			Ok(entry) => {
-			    if entry.path().extension().expect(err).to_str() == Some("toml") {
-				return Some(entry.path())
+			    if let Ok(t) = entry.file_type() {
+				if !t.is_file() {
+				    return None;
+				}
 			    } else {
-				return None
+				return None;
+			    }
+			    
+			    if entry.path().extension().expect(err).to_str() == Some("toml") {
+				return Some(entry.path());
+			    } else {
+				return None;
 			    }
 			},
 			Err(_) => None

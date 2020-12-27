@@ -21,7 +21,7 @@ fn get_option_string(conf: &value::Table, key: &str) -> Option<String> {
     return conf.get(key).map(|x| x.as_str()).flatten().map(|x| String::from(x));
 }
 
-pub fn create_module(heading: &str, section: &value::Table) -> Box<dyn ConfModule> {    
+pub fn create_module(heading: &str, section: &value::Table) -> Box<dyn ConfModule> {
     match heading {
 	"bridge" => Box::new(MacVTapModule::new(section)),
 	"pcie-passthrough" => Box::new(VfioModule {
@@ -50,26 +50,27 @@ fn build_path(prefix: &str, name: &str, suffix: &str) -> path::PathBuf {
 
 fn init_perm<P: AsRef<path::Path>>(path: &P, uid: u32, gid: u32) {
     println!("Initializing Permissions on {}", path.as_ref().to_str().unwrap());
-    
+
     let f = fs::File::open(path).expect(&format!("cannot open device")); // shouldn't happen
-    match f.metadata() {
-	Ok(metadata) => {
-	    let owner = metadata.uid();
-	    let group_owner = metadata.gid();
-	    let pathname = path.as_ref().to_str().unwrap();
-	    if owner != uid || group_owner != gid {
-		println!("  Changing the owner of {} to {}:{}", pathname, uid, gid);
-		unsafe {
-		    if libc::fchown(f.as_raw_fd(), uid, gid) != 0 {
-			panic!(format!("failed to set ownership for file {}", pathname))
+    loop {
+	match f.metadata() {
+	    Ok(metadata) => {
+		let owner = metadata.uid();
+		let group_owner = metadata.gid();
+		let pathname = path.as_ref().to_str().unwrap();
+		if owner != uid || group_owner != gid {
+		    println!("  Changing the owner of {} to {}:{}", pathname, uid, gid);
+		    if unsafe { libc::fchown(f.as_raw_fd(), uid, gid) } != 0 {
+			panic!(format!("failed to set ownership for file {}", pathname));
 		    }
+		} else {
+		    println!("  {} is ready.", pathname);
+		    break;
 		}
-	    } else {
-		println!("  {} is ready.", pathname);
 	    }
-	}
-	Err(_) => {
-	    panic!(format!("Cannot access metadata for file {}", path.as_ref().to_str().unwrap()))
+	    Err(_) => {
+		panic!(format!("Cannot access metadata for file {}", path.as_ref().to_str().unwrap()))
+	    }
 	}
     }
 }
@@ -103,29 +104,38 @@ impl MacVTapModule {
 impl ConfModule for MacVTapModule {
     fn init(&self, uid: u32, gid: u32) {
 	let net_class_path = build_path("/sys/class/net", &self.ifname, "");
-	if !net_class_path.exists() {
-	    println!("{} does not exist, creating and enabling link {} name {} with mac {}",
-		     net_class_path.to_str().unwrap(), &self.ifhost, &self.ifname, &self.macaddress);
-	    {
-		let p = Command::new("ip")
-		    .args(&["link", "add", "link", &self.ifhost, "name", &self.ifname, "type", "macvtap", "mode", "bridge"])
-		    .output()
-		    .expect("Cannot run ip link to create a new macvtap");
-		
-		if !p.status.success() {
-		    panic!(String::from_utf8(p.stderr).unwrap());
-		}
-	    }
-	    {
-		let p = Command::new("ip")
-		    .args(&["link", "set", &self.ifname, "address", &self.macaddress, "up"])
-		    .output()
-		    .expect("Cannot up the link with the mac address");
-		if !p.status.success() {
-		    panic!(String::from_utf8(p.stderr).unwrap());
-		}
+	if net_class_path.exists() {
+	    println!("Link {} exist, removing...", net_class_path.to_str().unwrap());
+	    let p = Command::new("ip")
+		.args(&["link", "del", &self.ifhost])
+		.output()
+		.expect("Cannot run ip link to delete the old macvtap");
+	    if !p.status.success() {
+		panic!(String::from_utf8(p.stderr).unwrap());
 	    }
 	}
+	println!("Creating and enabling link {} name {} with mac {}",
+		 &self.ifhost, &self.ifname, &self.macaddress);
+	{
+	    let p = Command::new("ip")
+		.args(&["link", "add", "link", &self.ifhost, "name", &self.ifname, "type", "macvtap", "mode", "bridge"])
+		.output()
+		.expect("Cannot run ip link to create a new macvtap");
+
+	    if !p.status.success() {
+		panic!(String::from_utf8(p.stderr).unwrap());
+	    }
+	}
+	{
+	    let p = Command::new("ip")
+		.args(&["link", "set", &self.ifname, "address", &self.macaddress, "up"])
+		.output()
+		.expect("Cannot up the link with the mac address");
+	    if !p.status.success() {
+		panic!(String::from_utf8(p.stderr).unwrap());
+	    }
+	}
+
 	let net_class_macvtap_path = build_path("/sys/class/net", &self.ifname, "macvtap");
 	if !net_class_macvtap_path.exists() {
 	    panic!("{} does not exist, {} isn't a macvtap interface!",
@@ -144,7 +154,7 @@ impl ConfModule for MacVTapModule {
             let flags = libc::fcntl(fd, libc::F_GETFD);
             libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
 	}
-	
+
 	return vec![String::from("-netdev"),
 		    format!("tap,id={},fd={},vhost=on", &self.ifname, fd),
 		    String::from("-device"),

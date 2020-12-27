@@ -147,6 +147,7 @@ fn download_and_convert_image(vendor: &str, name: &str, url: &str) -> Result<(),
 		convert_all_images(
 		    prefix_name.as_ref(),
 		    parse_ovf(&format!("{}/box.ovf", prefix_name.as_ref())));
+		remove_dir_all(prefix_name.as_ref()).unwrap();
 		Ok(())
 	    }
 	}

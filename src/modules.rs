@@ -1,6 +1,6 @@
 use libc;
 use toml::value;
-use std::{fs, path};
+use std::{fs, path, thread::sleep, time};
 use std::io::prelude::*;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
@@ -52,25 +52,23 @@ fn init_perm<P: AsRef<path::Path>>(path: &P, uid: u32, gid: u32) {
     println!("Initializing Permissions on {}", path.as_ref().to_str().unwrap());
 
     let f = fs::File::open(path).expect(&format!("cannot open device")); // shouldn't happen
-    loop {
-	match f.metadata() {
-	    Ok(metadata) => {
-		let owner = metadata.uid();
-		let group_owner = metadata.gid();
-		let pathname = path.as_ref().to_str().unwrap();
-		if owner != uid || group_owner != gid {
-		    println!("  Changing the owner of {} to {}:{}", pathname, uid, gid);
-		    if unsafe { libc::fchown(f.as_raw_fd(), uid, gid) } != 0 {
-			panic!(format!("failed to set ownership for file {}", pathname));
-		    }
-		} else {
-		    println!("  {} is ready.", pathname);
-		    break;
+    
+    match f.metadata() {
+	Ok(metadata) => {
+	    let owner = metadata.uid();
+	    let group_owner = metadata.gid();
+	    let pathname = path.as_ref().to_str().unwrap();
+	    if owner != uid || group_owner != gid {
+		println!("  Changing the owner of {} to {}:{}", pathname, uid, gid);
+		if unsafe { libc::fchown(f.as_raw_fd(), uid, gid) } != 0 {
+		    panic!(format!("failed to set ownership for file {}", pathname));
 		}
+	    } else {
+		println!("  {} is ready.", pathname);
 	    }
-	    Err(_) => {
-		panic!(format!("Cannot access metadata for file {}", path.as_ref().to_str().unwrap()))
-	    }
+	}
+	Err(_) => {
+	    panic!(format!("Cannot access metadata for file {}", path.as_ref().to_str().unwrap()))
 	}
     }
 }
@@ -143,6 +141,8 @@ impl ConfModule for MacVTapModule {
 	}
 
 	let ifidx = self.ifidx();
+	// race here?
+	sleep(time::Duration::from_millis(3000));
 	init_perm(&format!("/dev/tap{}", ifidx), uid, gid);
     }
     fn startup_args(&mut self) -> Vec<String> {

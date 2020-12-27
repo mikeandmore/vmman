@@ -1,5 +1,10 @@
 #!/bin/sh
 
+function RDBYTE() {
+    let "b = $RANDOM % 256"
+    printf '%.2x' $b
+}
+
 if [ $# -eq 0 ]; then
     echo "Usage: $0 vmname"
     echo "Usage: $0 vmname imgfile"
@@ -18,12 +23,6 @@ if [ $# -eq 2 ]; then
     IMG=$2
     ISOIMG=""
 fi
-
-function RDBYTE() {
-    let "b = $RANDOM % 256"
-    printf '%.2x' $b
-}
-
 
 cat <<EOF > ${VMNAME}.toml
 [base.system]

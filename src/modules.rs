@@ -107,7 +107,7 @@ impl ConfModule for MacVTapModule {
 	if net_class_path.exists() {
 	    println!("Link {} exist, removing...", net_class_path.to_str().unwrap());
 	    let p = Command::new("ip")
-		.args(&["link", "del", &self.ifhost])
+		.args(&["link", "del", &self.ifname])
 		.output()
 		.expect("Cannot run ip link to delete the old macvtap");
 	    if !p.status.success() {

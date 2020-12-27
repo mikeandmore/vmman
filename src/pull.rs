@@ -1,30 +1,116 @@
-use std::env;
+use std::{env, fs::{create_dir, remove_dir_all}};
 use std::str;
 use std::vec::Vec;
 use std::fs::File;
 use libc;
-use std::ffi::CString;
-use std::io::prelude::*;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use quick_xml::{Reader, events::{BytesStart, Event}};
+use std::{ffi::CString, io::prelude::*};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicI32, Ordering}};
 use curl::easy::Easy;
 
+fn process_ovf_xml_tag(evt: &BytesStart, disk_images: &mut Vec<String>) {
+    if evt.name() == b"File" {
+	match evt.attributes().find(|ref att| { att.as_ref().unwrap().key == b"ovf:href" }) {
+	    Some(a) => {
+		// println!("{}", String::from_utf8(a.unwrap().value.to_vec()).unwrap());
+		if let Ok(image_name) = String::from_utf8(a.unwrap().value.to_vec()) {
+		    disk_images.push(image_name);
+		} else {
+		    println!("invalid filenames inside the File tag");
+		}
+	    },
+	    None => {
+		panic!("Cannot find ovf:href attribute for File tag");
+	    }
+	}
+    }
+}
+
+fn parse_ovf(ovf_file: &str) -> Vec<String> {
+    println!("Parsing ovf description file {}", ovf_file);
+    let mut xml = Reader::from_file(ovf_file).expect(&format!("Cannot open file {}", ovf_file));
+    let mut buffer = Vec::new();
+    let mut disk_images = Vec::<String>::new();
+    loop {
+	match xml.read_event(&mut buffer) {
+	    Ok(Event::Start(ref evt)) => {
+		// println!("event start {}", String::from_utf8(evt.name().to_vec()).unwrap());
+		process_ovf_xml_tag(evt, &mut disk_images);
+	    },
+	    Ok(Event::End(_)) => {
+		// println!("event end {}", String::from_utf8(evt.name().to_vec()).unwrap());
+	    },
+	    Ok(Event::Empty(ref evt)) => {
+		// println!("event empty {}", String::from_utf8(evt.name().to_vec()).unwrap());
+		process_ovf_xml_tag(evt, &mut disk_images);
+	    }
+	    Ok(Event::Eof) => {
+		break;
+	    },
+	    Err(_) => {
+		panic!("Error parsing xml at {}", xml.buffer_position());
+	    },
+	    _ => {}
+	}
+	buffer.clear();
+    }
+
+    return disk_images;
+}
+
+fn os_system(cmd: String) -> Result<(), ()> {
+    if unsafe { libc::system(CString::new(cmd).unwrap().as_ptr()) } != 0 {
+	Err(())
+    } else {
+	Ok(())
+    }
+}
+
+fn convert_all_images(prefix_name: &str, disk_images: Vec<String>) {
+    if disk_images.len() == 1 {
+	println!("Converting to {}.img", prefix_name);
+	let cmd = format!("qemu-img convert -O raw {}/{} {}.img", prefix_name, disk_images[0], prefix_name);
+	os_system(cmd).expect("Qemu fail to convert image");
+    } else {
+	let mut count = 0;
+	disk_images.into_iter().for_each(|ref filename| {
+	    println!("Converting to {}-{}.img", prefix_name, count);
+	    let cmd = format!("qemu-img convert -O raw {}/{} {}-{}.img", prefix_name, filename, prefix_name, count);
+	    os_system(cmd).expect("Qemu fail to convert image");
+	    count += 1;
+	})
+    }
+}
+
 fn download_and_convert_image(vendor: &str, name: &str, url: &str) -> Result<(), String> {
+    let prefix_name = Arc::new(format!("{}-{}", vendor, name));
+    let prefix_name_ref = prefix_name.clone();
+    let old_panic_hook = std::panic::take_hook();
+    
+    std::panic::set_hook(Box::new(move |info| {
+	if let Some(msg) = info.payload().downcast_ref::<String>() {
+	    println!("Error: {}", msg);
+	}
+	println!("Removing working dir {}", prefix_name_ref.as_ref());
+	remove_dir_all(prefix_name_ref.as_ref()).unwrap();
+	old_panic_hook(info);
+    }));
+    
+    let filename = format!("{}/ovf", &prefix_name);
+    println!("Saving temporary files to {}/", &prefix_name);
+
     let mut easy = Easy::new();
     easy.url(url).unwrap();
     easy.follow_location(true).unwrap();
     easy.progress(true).unwrap();
-
-    let prefix_name = format!("{}-{}", vendor, name);
-    let mut transfer = easy.transfer();
-    let filename = format!("{}.vdi", prefix_name);
     
-    let f = Arc::new(Mutex::new(
-	match File::create(filename) {
-	    Ok(f) => {f}
-	    Err(_) => { return Err("Cannot open file".to_string()); }
-	}
-    ));
+    create_dir(prefix_name.as_ref()).expect(
+	&format!("Cannot create dir {}. Another pull with the same name in progress/failed?",
+		 prefix_name.as_ref()));
+    
+    let mut transfer = easy.transfer();
+    
+    let f = Arc::new(Mutex::new(File::create(&filename).expect("Cannot open file")));
 
     let has_error = Arc::new(AtomicBool::new(false));
     let has_error_ref = has_error.clone();
@@ -43,9 +129,8 @@ fn download_and_convert_image(vendor: &str, name: &str, url: &str) -> Result<(),
 
     let fref = f.clone();
     transfer.write_function(move |data| {
-	match fref.lock().unwrap().write(data) {
-	    Ok(_) => {}
-	    Err(_) => { has_error_ref.store(true, Ordering::Release); }
+	if let Ok(_) = fref.lock().unwrap().write(data) {} else {
+	    has_error_ref.store(true, Ordering::Release);
 	};
 	
 	Ok(data.len())
@@ -56,13 +141,17 @@ fn download_and_convert_image(vendor: &str, name: &str, url: &str) -> Result<(),
 	    if has_error.load(Ordering::Acquire) {
 		Err("Download error".to_string())
 	    } else {
-		let cmd = format!("qemu-img convert -f vdi -O raw {}.vdi {}.img", prefix_name, prefix_name);
-		unsafe { libc::system(CString::new(cmd).unwrap().as_ptr()); }
+		let cmd = format!("tar xf {}/ovf -C {}/", prefix_name.as_ref(), prefix_name.as_ref());
+		os_system(cmd).expect("Extracting box image failed");
 		// println!("{}", cmd);
+		convert_all_images(
+		    prefix_name.as_ref(),
+		    parse_ovf(&format!("{}/box.ovf", prefix_name.as_ref())));
 		Ok(())
 	    }
 	}
 	Err(_) => {
+	    remove_dir_all(prefix_name.as_ref()).unwrap();
 	    Err("Cannot download image file".to_string())
 	}
     }
@@ -92,8 +181,7 @@ fn pull_from_url(vendor: &str, name: &str, url: &str) {
 	Ok(data.len())
     }).unwrap();
     transfer.perform().unwrap();
-    println!("");
-
+    
     let jobj = json::parse(str::from_utf8(dst.lock().unwrap().as_ref()).unwrap());
     match jobj {
 	Ok(x) => {

@@ -23,6 +23,7 @@ toml = "0.4.2"
 json = "0.12.4"
 curl = "0.4.34"
 libc = "0.2.66"
+quick-xml = "0.20.0"
 
 [profile.release]
 lto = true

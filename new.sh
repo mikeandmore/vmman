@@ -14,7 +14,6 @@ fi
 HOSTIFNAME="eno3"
 VMNAME=$1
 IFNAME="$USER$VMNAME"
-SERIALPATH="/tmp/$USER-$VMNAME.serial"
 MACSUFFIX="`RDBYTE`:`RDBYTE`:`RDBYTE`:`RDBYTE`"
 IMG="/local/$USER/vm/your_img_here.img"
 ISOIMG="/local/$USER/vm/your_installation_iso_here"
@@ -32,7 +31,6 @@ smp = "sockets=1,cores=4,threads=1"
 mem = "4096"
 mempath = "/dev/hugepages"
 smbios = "type=2"
-serial = "unix:${SERIALPATH},nowait"
 [bridge.${IFNAME}]
 interface = "${IFNAME}"
 host-interface = "${HOSTIFNAME}"
@@ -43,7 +41,7 @@ driver = "virtio"
 file = "${IMG}"
 EOF
 
-if [ -n $ISOIMG ]; then
+if [ -n "$ISOIMG" ]; then
     cat <<EOF >> ${VMNAME}.toml
 [storage.cdrom]
 driver = "ide"

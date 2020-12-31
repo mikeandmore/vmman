@@ -12,10 +12,6 @@ path = "src/main.rs"
 name = "vm-init"
 path = "src/init.rs"
 
-[[bin]]
-name = "vm-pull"
-path = "src/pull.rs"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

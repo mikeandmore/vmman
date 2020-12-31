@@ -228,7 +228,7 @@ fn pull_from_vagrant(vendor: &str, name: &str) {
     pull_from_url(vendor, name, url.as_ref());
 }
 
-fn main() {
+pub fn pull() {
     let args = env::args().skip(1).collect::<Vec<_>>();
     let (vendor, name) = parse_repo_name(args[0].as_ref());
 	

@@ -1,8 +1,9 @@
 use std::env;
 pub mod vm;
+pub mod pull;
 
 fn usage() {
-    println!("Cannot run vmman binary directly. Please run vm-run/vm-init/vm-list.");
+    println!("Cannot run vmman binary directly. Please run vm-run/vm-init/vm-list/vm-pull.");
 }
 
 fn main() {
@@ -20,6 +21,9 @@ fn main() {
 		"vm-run" => {
 		    let conf = vm::load_vm(&mut mgr, &args);
 		    conf.run()
+		}
+		"vm-pull" => {
+		    pull::pull();
 		}
 		_ => {
 		    usage();

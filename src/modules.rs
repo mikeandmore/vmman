@@ -1,9 +1,7 @@
 use libc;
 use toml::value;
-use std::{fs, path, thread::sleep, time};
-use std::io::prelude::*;
-use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::AsRawFd;
+use std::{io::Write, os::unix::prelude::{AsRawFd, MetadataExt}, path, thread::sleep, time};
+use std::fs;
 use std::process::Command;
 
 pub trait ConfModule {
@@ -23,7 +21,8 @@ fn get_option_string(conf: &value::Table, key: &str) -> Option<String> {
 
 pub fn create_module(heading: &str, section: &value::Table) -> Box<dyn ConfModule> {
     match heading {
-	"bridge" => Box::new(MacVTapModule::new(section)),
+	"macvtap" => Box::new(MacVTapModule::new(section)),
+	"tapbridge" => Box::new(BridgeTapModule::new(section)),
 	"pcie-passthrough" => Box::new(VfioModule {
 	    name: get_string(section, "dev"),
 	    romfile: get_option_string(section, "romfile"),
@@ -37,6 +36,9 @@ pub fn create_module(heading: &str, section: &value::Table) -> Box<dyn ConfModul
 	    filename: get_string(section, "file"),
 	    media: get_option_string(section, "media"),
 	}),
+	"bridge" => {
+	    panic!("'bridge' deprecated, consider using 'macvtap'/'tapbridge' module");
+	}
 	x => panic!("unknown module {}", x)
     }
 }
@@ -73,60 +75,53 @@ fn init_perm<P: AsRef<path::Path>>(path: &P, uid: u32, gid: u32) {
     }
 }
 
-// Bridge
-struct MacVTapModule {
+// Base Tap/Network struct
+struct BaseTapModule {
     ifname: String,
-    ifhost: String,
     macaddress: String,
     driver: String,
-
-    tapfile: Option<fs::File>,
 }
 
-impl MacVTapModule {
-    pub fn new(conf: &value::Table) -> MacVTapModule {
-	return MacVTapModule {
+impl BaseTapModule {
+    pub fn new(conf: &value::Table) -> BaseTapModule {
+	return BaseTapModule {
 	    ifname: get_string(conf, "interface"),
-	    ifhost: get_string(conf, "host-interface"),
 	    macaddress: get_string(conf, "mac"),
-	    driver: get_string(conf, "driver"),
-	    tapfile: None,
+	    driver: get_string(conf, "driver")
 	}
     }
 
-    fn ifidx(&self) -> String {
+    pub fn ifidx(&self) -> String {
 	return String::from(fs::read_to_string(build_path("/sys/class/net", &self.ifname, "ifindex").as_path()).expect("Cannot read ifindex").trim_end());
     }
-}
 
-impl ConfModule for MacVTapModule {
-    fn init(&self, uid: u32, gid: u32) {
+    pub fn custom_init(&self, _uid: u32, _gid: u32, create_commands: &[&str], drv_suffix: &str) {
 	let net_class_path = build_path("/sys/class/net", &self.ifname, "");
 	if net_class_path.exists() {
 	    println!("Link {} exist, removing...", net_class_path.to_str().unwrap());
 	    let p = Command::new("ip")
 		.args(&["link", "del", &self.ifname])
 		.output()
-		.expect("Cannot run ip link to delete the old macvtap");
+		.expect(&format!("Cannot run ip link to delete the old tap {}", &self.ifname));
 	    if !p.status.success() {
 		panic!(String::from_utf8(p.stderr).unwrap());
 	    }
 	}
-	println!("Creating and enabling link {} name {} with mac {}",
-		 &self.ifhost, &self.ifname, &self.macaddress);
 	{
 	    let p = Command::new("ip")
-		.args(&["link", "add", "link", &self.ifhost, "name", &self.ifname, "type", "macvtap", "mode", "bridge"])
+		.args(create_commands)
 		.output()
-		.expect("Cannot run ip link to create a new macvtap");
+		.expect("Cannot run ip link to create a new tap");
 
 	    if !p.status.success() {
 		panic!(String::from_utf8(p.stderr).unwrap());
 	    }
 	}
+	// race here?
+	sleep(time::Duration::from_secs(2));
 	{
 	    let p = Command::new("ip")
-		.args(&["link", "set", &self.ifname, "address", &self.macaddress, "up"])
+		.args(&["link", "set", &self.ifname, "up"])
 		.output()
 		.expect("Cannot up the link with the mac address");
 	    if !p.status.success() {
@@ -134,34 +129,103 @@ impl ConfModule for MacVTapModule {
 	    }
 	}
 
-	let net_class_macvtap_path = build_path("/sys/class/net", &self.ifname, "macvtap");
-	if !net_class_macvtap_path.exists() {
-	    panic!("{} does not exist, {} isn't a macvtap interface!",
-		   net_class_macvtap_path.to_str().unwrap(), self.ifname);
+	if drv_suffix.len() > 0 {
+	    let net_class_drv_path = build_path("/sys/class/net", &self.ifname, drv_suffix);
+	    if !net_class_drv_path.exists() {
+		panic!("{} does not exist, {} isn't a {} interface!",
+		       net_class_drv_path.to_str().unwrap(), self.ifname, drv_suffix);
+	    }
 	}
+    }
 
-	let ifidx = self.ifidx();
+    fn startup_args_base(&mut self) -> Vec<String> {
+	return vec![String::from("-device"),
+		    format!("{},netdev={},mac={}", &self.driver, &self.ifname, &self.macaddress)];
+    }
+}
+
+// MacVTap
+struct MacVTapModule {
+    base: BaseTapModule,
+    ifhost: String,
+}
+
+impl MacVTapModule {
+    pub fn new(conf: &value::Table) -> MacVTapModule {
+	return MacVTapModule {
+	    base: BaseTapModule::new(conf),
+	    ifhost: get_string(conf, "host-interface")
+	}
+    }
+}
+
+impl ConfModule for MacVTapModule {
+    fn init(&self, uid: u32, gid: u32) {
+	self.base.custom_init(
+	    uid, gid,
+	    &["link", "add", "name", &self.base.ifname,
+	      "link", &self.ifhost,
+	      "address", &self.base.macaddress,
+	      "type", "macvtap",
+	      "mode", "bridge"],
+	    "macvtap");
+	
+	let ifidx = self.base.ifidx();
 	// race here?
-	sleep(time::Duration::from_millis(3000));
+	sleep(time::Duration::from_secs(2));
 	init_perm(&format!("/dev/tap{}", ifidx), uid, gid);
     }
     fn startup_args(&mut self) -> Vec<String> {
-	let tapfile = fs::OpenOptions::new().read(true).write(true).open(format!("/dev/tap{}", self.ifidx())).expect("Cannot open tap device");
+	let tapfile = fs::OpenOptions::new().read(true).write(true).open(format!("/dev/tap{}", self.base.ifidx())).expect("Cannot open tap device");
 	let fd = tapfile.as_raw_fd();
-	self.tapfile = Some(tapfile);
 
 	unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFD);
             libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
 	}
-
-	return vec![String::from("-netdev"),
-		    format!("tap,id={},fd={},vhost=on", &self.ifname, fd),
-		    String::from("-device"),
-		    format!("{},netdev={},mac={}", &self.driver, &self.ifname, &self.macaddress)];
+	let mut args = vec![String::from("-netdev"), format!("tap,id={},fd={},vhost=on", &self.base.ifname, fd)];
+	args.extend(self.base.startup_args_base());
+	return args;
     }
-    fn post_startup(&mut self) {
-	// self.tapfile = None;
+}
+
+struct BridgeTapModule {
+    base: BaseTapModule,
+    ifbr: String,
+}
+
+impl BridgeTapModule {
+    pub fn new(conf: &value::Table) -> BridgeTapModule {
+	return BridgeTapModule {
+	    base: BaseTapModule::new(conf),
+	    ifbr: get_string(conf, "bridge")
+	}
+    }
+}
+
+impl ConfModule for BridgeTapModule {
+    fn init(&self, uid: u32, gid: u32) {
+	self.base.custom_init(
+	    uid, gid,
+	    &["tuntap", "add", &self.base.ifname, "mode", "tap"],
+	    "");
+
+	{
+	    let p = Command::new("ip")
+		.args(&["link", "set", &self.base.ifname, "master", &self.ifbr])
+		.output()
+		.expect(&format!("cannot add {} into {}", &self.base.ifname, &self.ifbr));
+	    if !p.status.success() {
+		panic!(String::from_utf8(p.stderr).unwrap());
+	    }
+	}
+    }
+    
+    
+    fn startup_args(&mut self) -> Vec<String> {
+	let mut args = vec![String::from("-netdev"), format!("tap,id={},ifname={},script=no,downscript=no", &self.base.ifname, &self.base.ifname)];
+	args.extend(self.base.startup_args_base());
+	return args;
     }
 }
 
@@ -178,14 +242,14 @@ impl VfioModule {
 	    let err = "Cannot override current driver.";
 	    let path_buf = build_path("/sys/bus/pci/devices", &self.name, "driver_override");
 	    println!("  Overriding in {}", path_buf.to_str().unwrap());
-	    let mut f = fs::OpenOptions::new().read(true).write(true).open(path_buf).expect(err);
+	    let mut f = fs::OpenOptions::new().read(false).write(true).open(path_buf).expect(err);
 	    f.write_all(b"vfio-pci").expect(err);
 	}
 	{
 	    let err = "Cannot probe driver after override";
 	    let path_buf = "/sys/bus/pci/drivers_probe";
 	    println!("  Probing drivers using {}", path_buf);
-	    let mut f = fs::OpenOptions::new().read(true).write(true).open(&path_buf).expect(err);
+	    let mut f = fs::OpenOptions::new().read(false).write(true).open(&path_buf).expect(err);
 	    f.write_all(self.name.as_bytes()).expect(err);
 	}
     }
@@ -200,7 +264,7 @@ impl ConfModule for VfioModule {
 		println!("Unbinding PCI device {} from driver {}", &self.name, &drv_name);
 		{
 		    let err = "Cannot unbind device";
-		    let mut f = fs::OpenOptions::new().read(true).write(true).open(build_path("/sys/bus/pci/devices", &self.name, "driver/unbind")).expect(err);
+		    let mut f = fs::OpenOptions::new().read(false).write(true).open(build_path("/sys/bus/pci/devices", &self.name, "driver/unbind")).expect(err);
 		    f.write_all(self.name.as_bytes()).expect(err);
 		}
 		self.override_driver()
